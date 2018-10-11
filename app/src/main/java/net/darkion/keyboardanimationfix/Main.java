@@ -5,10 +5,13 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
 import android.animation.TimeInterpolator;
 import android.app.Dialog;
+import android.content.DialogInterface;
 import android.inputmethodservice.InputMethodService;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+
+import org.jetbrains.annotations.Nullable;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.IXposedHookZygoteInit;
@@ -54,25 +57,31 @@ public class Main implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                 super.beforeHookedMethod(param);
                 if (cSoftInputWindow.isInstance(param.thisObject)) {
-                    final View view = ((Dialog) param.thisObject).getWindow().getDecorView();
-                    ObjectAnimator animator = ObjectAnimator.ofFloat(view, View.Y, 0f, view.getHeight());
-                    animator.addListener(new AnimatorListenerAdapter() {
-                        @Override
-                        public void onAnimationEnd(Animator animation) {
-                            super.onAnimationEnd(animation);
-                            view.setVisibility(View.GONE);
-                            resetView(view, true);
-                        }
-                    });
-                    animator.setInterpolator(LogAccelerateInterpolator.getInstance());
-                    animator.setDuration(ANIMATION_DURATION);
-                    animator.start();
-                    param.setResult(null);
+                    runExitAnimation((Dialog) param.thisObject, param);
                 }
             }
 
         });
 
+        XposedHelpers.findAndHookMethod(cSoftInputWindow, "initDockWindow", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(final MethodHookParam param) throws Throwable {
+                super.afterHookedMethod(param);
+                final Dialog objectDialog = (Dialog) param.thisObject;
+                objectDialog.setOnShowListener(new DialogInterface.OnShowListener() {
+                    @Override
+                    public void onShow(DialogInterface dialog) {
+                        runEntranceAnimation(objectDialog);
+                    }
+                });
+                objectDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+                    @Override
+                    public void onDismiss(DialogInterface dialog) {
+                        runExitAnimation(objectDialog, null);
+                    }
+                });
+            }
+        });
 
         XposedHelpers.findAndHookMethod(Dialog.class, "show", new XC_MethodHook() {
             @Override
@@ -99,20 +108,46 @@ public class Main implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     }
 
-    private static void runEntranceAnimation(final Dialog dialog) {
-        final Window window = (Window) XposedHelpers.callMethod(dialog, "getWindow");
+    private static void runExitAnimation(@Nullable final Dialog dialog, @Nullable XC_MethodHook.MethodHookParam param) {
+        if (dialog == null || dialog.getWindow() == null) return;
         final View view = dialog.getWindow().getDecorView();
-        final int height = view.getHeight();
+        final float height = view.getHeight() * 1.5f;
+        ObjectAnimator animator = ObjectAnimator.ofFloat(view, View.Y, 0f, height);
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                super.onAnimationEnd(animation);
+                view.setVisibility(View.GONE);
+                resetView(view, true);
+            }
+        });
+        animator.setInterpolator(LogAccelerateInterpolator.getInstance());
+        animator.setDuration(ANIMATION_DURATION);
+        animator.start();
+        if (param != null) param.setResult(null);
+    }
+
+    private static void runEntranceAnimation(@Nullable final Dialog dialog) {
+        if (dialog == null || dialog.getWindow() == null) return;
+        final Window window = dialog.getWindow();
+        final View view = window.getDecorView();
+        final float height = view.getHeight() * 1.5f;
         final WindowManager.LayoutParams lp = window.getAttributes();
+        //dirty hack to prevent lp from animating
+        try {
+            int currentFlags = (Integer) lp.getClass().getField("privateFlags").get(lp);
+            lp.getClass().getField("privateFlags").set(lp, currentFlags | 0x00000040);
+        } catch (Exception e) {
+            //
+        }
+        window.setAttributes(lp);
 
         resetView(view, true);
         view.setTranslationY(height);
         view.post(new Runnable() {
             @Override
             public void run() {
-                lp.height = height;
-                window.setAttributes(lp);
-                ObjectAnimator animator = ObjectAnimator.ofFloat(view, View.Y, view.getHeight(), 0.0f);
+                ObjectAnimator animator = ObjectAnimator.ofFloat(view, View.Y, height, 0.0f);
                 animator.addListener(new AnimatorListenerAdapter() {
                     @Override
                     public void onAnimationStart(Animator animation) {
